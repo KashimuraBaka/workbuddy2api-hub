@@ -51,25 +51,52 @@ def generate_request_id(uid: str) -> str:
     return uuid.uuid4().hex
 
 
-def get_desktop_fingerprint(uid: str, nickname: str = "", os_name: str = "win32") -> dict:
-    """生成上报事件所需的标准完整桌面端指纹。"""
+#: 桌面端 /v2/report 的包指纹三元组 (ideVersion, commit, releaseDate)。
+#: commit 与 releaseDate 是打包期常量、无法从版本号推导；两版分发包不同，
+#: 给国内号发国际版的三元组等于自相矛盾（版本 5.8.3 配 5.8.4 的 commit），
+#: 是最容易被设备侧写识破的一处。取值见 2026-10-20 双版本抓包实测。
+DESKTOP_TRIPLES = {
+    "cn": ("5.8.4", "5f9692923c93033111c51ad7b003eb80204a9b75", 1789036585355),
+    "intl": ("5.8.4", "73952edb48da46bd0b244661efe22f4f247c4977", 1792063084107),
+}
+
+
+def derive_hex36(uid: str, salt: str) -> str:
+    """按账号稳定派生 36 位小写 hex（qimei36 的形状）。
+
+    与 derive_id 的 UUID 形态分开：qimei36 是腾讯设备标识的裸 hex 形态
+    （36 位、无连字符），塞一个带连字符的 UUID 进去形态就不对了。
+    """
+    seed = f"{salt}:{uid or 'anonymous'}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:36]
+
+
+def get_desktop_fingerprint(uid: str, nickname: str = "", os_name: str = "win32",
+                            realm: str = "cn") -> dict:
+    """生成上报事件所需的标准完整桌面端指纹。
+
+    realm 决定包三元组（见 DESKTOP_TRIPLES）与 qimei36：国内版桌面端每个
+    report 事件都带 qimei36，国际版一条都不带（2026-10-20 双版本抓包实测，
+    CN 28 键 vs GL 27 键的差集恰好只有它）——给国际版补这个键反而是伪造。
+    """
     now = int(time.time() * 1000)
-    return {
+    version, commit, release = DESKTOP_TRIPLES["intl" if realm == "intl" else "cn"]
+    fingerprint = {
         "timezone": "Asia/Shanghai",
         "reportDelay": 2000,
         "userId": uid,
         "username": nickname,
         "userNickname": nickname,
         "product": "SaaS",
-        "releaseDate": 1789036585355,
-        "commit": "5f9692923c93033111c51ad7b003eb80204a9b75",
+        "releaseDate": release,
+        "commit": commit,
         "ideName": "WorkBuddy",
         "ideType": "WorkBuddy",
-        "ideVersion": "5.8.4",
+        "ideVersion": version,
         "machineId": derive_id(uid, "machine"),
         "sessionId": session_id(uid),
         "extName": "workbuddy-desktop",
-        "extVersion": "5.8.4",
+        "extVersion": version,
         "os": os_name,
         "arch": "x64",
         "osVersion": "10.0.26220",
@@ -78,3 +105,6 @@ def get_desktop_fingerprint(uid: str, nickname: str = "", os_name: str = "win32"
         "timestamp": now,
         "presentAt": now,
     }
+    if realm != "intl":
+        fingerprint["qimei36"] = derive_hex36(uid, "qimei")
+    return fingerprint

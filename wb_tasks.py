@@ -10,9 +10,11 @@ import json
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import wb_accounts as _accounts
+import wb_fingerprint
 import wb_identity
 
 # 默认 https://copilot.tencent.com；WB_CN_CHAT_UPSTREAM 可覆盖（见 wb_identity.CN_CHAT_BASE）。
@@ -23,6 +25,21 @@ WEB_BASE = "https://www.workbuddy.cn"
 #: 版本号（国际版 5.8.4 对齐时就是这么漏掉一份的）。
 DESKTOP_UA = wb_identity.DESKTOP_UA_CN
 WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+
+#: 桌面端行为链与网页行为类任务的判据常量。
+#:
+#: 这些任务认的不是「一个 eventCode」，而是**整套桌面指纹 + 事件链**：客户端
+#: 在真实操作后经同一个 POST /v2/report 上报多条事件，每条都带 ideName /
+#: ideType=WorkBuddy、extName=workbuddy-desktop、包三元组 commit/releaseDate
+#: 与设备标识。只发业务字段会被上游忽略或落到 heartbeat，进度永远是 0/1，
+#: 领奖必然 400 "task not completed"——这正是它们长期停在「进行中」的原因。
+BUDDY_APP_ID = "cb_y5Dy46tPQGGWtueMxXbe"
+BUDDY_APP_NAME = "企鹅教师助手"
+LIBRARY_DOC_URL = "https://www.workbuddy.cn/space/d/o0KWYeynteVv06UnAZqIFm"
+EXPERT_MARKET_PATH = "/portal/operation-platform/market/expert/list"
+#: 服务端 requestId 的真实形状（cmb- 前缀 32hex 或裸 32hex）。expert_actual_use
+#: 的 requestId 必须是服务端回的真实值——自造 UUID 不计数。
+_SERVER_REQUEST_ID = re.compile(r"^(cmb-)?[0-9a-f]{32}$")
 
 
 _log = lambda msg: None
@@ -47,14 +64,43 @@ TASK_SPECS = {
     "automation_1": {"kind": "automation", "target": 1, "reward": 100, "name": "创建自动化任务"},
     "playbook_prompt": {"kind": "playbook", "target": 1, "reward": 100, "name": "灵感案例使用"},
     "Expert_lighthouse": {"kind": "lighthouse", "target": 1, "reward": 100, "name": "轻量云专家使用"},
-    "Buddy_App": {"kind": "buddy5", "target": 1, "reward": 100, "name": "进入 Buddy 应用"},
-    "Buddy_App_QQ": {"kind": "buddy5", "target": 1, "reward": 100, "name": "企鹅教师助手"},
+    "Buddy_App": {"kind": "buddyapp", "target": 1, "reward": 100, "name": "进入 Buddy 应用"},
+    "Buddy_App_QQ": {"kind": "buddyapp", "target": 1, "reward": 100, "name": "企鹅教师助手"},
     "Hp_Appearance": {"kind": "skin", "target": 1, "reward": 100, "name": "应用主题外观"},
     "chat_5": {"kind": "chat", "target": 5, "reward": 100, "name": "发起 5 次对话"},
     "Model_chat_GLM5.2": {"kind": "glmchat", "target": 1, "reward": 100, "name": "体验 GLM-5.2"},
     "black_cat": {"kind": "cat", "target": 3, "reward": 100, "name": "夜猫子任务 (23:00-08:00)"},
     "RichMeow_Chat": {"kind": "richmeow", "target": 1, "reward": 100, "name": "桌面对话事件链"},
     "Library_read": {"kind": "library", "target": 1, "reward": 100, "name": "浏览资料库"},
+    # 「在专家页搜索并召唤「X」，完成一次对话」类活动任务（2026-10-23 上线，
+    # 各 +50 积分 +5 能量，截止 11-20）。专家 id 全部取自任务自身的 jump_url
+    # （PC deeplink experts?expertId=ex_…），并与专家市场条目交叉核对过：
+    # name 是专家**昵称**，title 才是任务标题里的职业名——判据事件里 name 取
+    # 昵称、expertTitle 取职业名，两者都参与服务端校验，不能互换。
+    "expert_use_maidehao": {
+        "kind": "experience", "target": 1, "reward": 50,
+        "expert": {"id": "ex_GDl31WahyIH0", "name": "卖得好", "title": "中国电商运营专家",
+                   "version": "1.0.1", "type": "agent"},
+        "name": "体验「中国电商运营专家」",
+    },
+    "expert_use_douyinyin": {
+        "kind": "experience", "target": 1, "reward": 50,
+        "expert": {"id": "ex_FbY5nlWTqDod", "name": "斗音音", "title": "抖音策略师",
+                   "version": "1.0.2", "type": "agent"},
+        "name": "体验「抖音策略师」",
+    },
+    "expert_use_shangjia_xuanchuan": {
+        "kind": "experience", "target": 1, "reward": 50,
+        "expert": {"id": "ex_Weo3x2EZuSDm", "name": "商家宣传设计师",
+                   "title": "商家宣传页与海报设计师", "version": "1.6.0", "type": "agent"},
+        "name": "体验「商家宣传页与海报设计师」",
+    },
+    "expert_use_bowangwang": {
+        "kind": "experience", "target": 1, "reward": 50,
+        "expert": {"id": "ex_WZY136wV5aMt", "name": "播旺旺", "title": "直播电商教练",
+                   "version": "1.0.2", "type": "agent"},
+        "name": "体验「直播电商教练」",
+    },
     # first_buddy 是 auto 类（上游不接受接取），完成后领奖才发放 Buddy 实例；
     # 它是所有 single 任务与猫猫旅行的前置（"prerequisite not met: first_buddy"）。
     "first_buddy": {"kind": "chat", "target": 1, "reward": 300, "name": "领取一只 Buddy"},
@@ -70,17 +116,21 @@ TASK_SPECS = {
 }
 
 # ---------------------------------------------------------------------------
-# 逆向修复常量 (2026-09 实测校准)
+# 桌面端行为链 (2026-10 校准)
 # ---------------------------------------------------------------------------
-# 这些任务上游只认桌面客户端的真实行为信号 (jump_url 均为 workbuddy:// 深链,
-# 需要真实点击进入对应页面)。伪造 /v2/report 事件会被忽略或落到 heartbeat,
-# 进度永远是 0/1, claim 必然返回 400 "task not completed"。诚实地跳过并给出深链。
-DESKTOP_ONLY_TASKS = {
-    "RichMeow_Chat": "在桌面端发起 1 次对话",
-    "Library_read": "在桌面端打开「资料库」并读完介绍文档",
-    "Buddy_App": "在桌面端左上角「发现应用」进入任意一个 Buddy 应用",
-    "Buddy_App_QQ": "在桌面端「发现应用」进入「企鹅教师助手」",
-}
+# 早前的结论是「RichMeow_Chat / Library_read / Buddy_App / 专家召唤只认桌面端
+# 真实操作，伪造事件不会推进进度」。实测证明那只对**造得不像的**事件成立：
+# 上游判据是「整套桌面指纹 + 事件链」，客户端在真实操作后上报的每条事件都带
+# ideName/ideType=WorkBuddy、extName=workbuddy-desktop、包三元组 commit /
+# releaseDate 与设备标识。补齐这些字段、按真实操作顺序发完整事件链后，纯 API
+# 即可点亮（workbuddy2api-panel 多账号实测，本仓用 baka 账号复验）。
+#
+# 因此这些任务不再进「只认桌面端」的跳过名单，由下面的动作函数直接执行：
+#   richmeow  桌面成功对话 6 事件链（agent_task_created → chat_request_response）
+#   buddyapp  「发现应用」进入五连事件（discover → show → enter → auth → bind skip）
+#   library   web 域 web_element_click(library_doc_intro_click)
+#   experience 专家页搜索 → 召唤链 → 真实对话（服务端 requestId）→ actual_use
+CHAIN_TASK_KINDS = ("richmeow", "buddyapp", "library", "experience")
 
 # 夜猫子任务只在 23:00-08:00 上报才计数, 且每天 1 次、累计 3 天。
 NIGHT_TASK_CODES = {"black_cat"}
@@ -419,6 +469,395 @@ def report_events(account, events, base=None):
         return False
 
 
+def _chat_host():
+    """X-Domain 用的裸主机名（真机是 copilot.tencent.com，不是带 scheme 的 URL）。
+
+    CHAT_BASE 可被 WB_CN_CHAT_UPSTREAM 覆盖，所以从生效的 base 里取，
+    不写死——否则换了上游地址，头里还留着旧域名。
+    """
+    return urllib.parse.urlsplit(CHAT_BASE).hostname or CHAT_BASE
+
+
+def _desktop_headers(account):
+    """桌面端 /v2/report 与专家市场共用的头族。
+
+    与 account.headers("chat") 的区别：那条是按当前出站身分（CLI / WorkBuddy /
+    VSCode）组的业务头；这里固定按**桌面客户端**的形态发，因为判据事件本身就是
+    桌面端行为。UA 与 wb_identity 同一来源，避免两处各写一份版本号。
+    """
+    return {
+        "Authorization": "Bearer " + account.access_token,
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json;charset=UTF-8",
+        "User-Agent": DESKTOP_UA,
+        "X-Domain": _chat_host(),
+        "X-Product": "SaaS",
+        "X-Request-ID": wb_fingerprint.generate_request_id(account.uid),
+        "X-User-Id": account.uid,
+    }
+
+
+def _desktop_payloads(account, events):
+    """给每条事件注入完整桌面指纹；事件自有字段优先（便于覆盖设备标识对齐真机）。"""
+    fingerprint = wb_fingerprint.get_desktop_fingerprint(
+        account.uid, getattr(account, "nickname", "") or "",
+        realm=getattr(account, "realm", "cn"))
+    payloads = []
+    for event in events:
+        item = dict(fingerprint)
+        item.update(event)
+        payloads.append(item)
+    return payloads
+
+
+def report_desktop_events(account, events):
+    """以桌面客户端指纹向 chat 域 /v2/report 上报事件数组。
+
+    与 report_events 的分工：那条走当前出站身分、body 只有业务字段，能点亮
+    「上报即计数」的任务；桌面判据任务（RichMeow_Chat / Buddy_App / 专家召唤
+    与使用）认整套桌面指纹 + 完整事件链，缺一项进度就不动。
+    """
+    if not events:
+        return False
+    url = CHAT_BASE + "/v2/report"
+    body = json.dumps(_desktop_payloads(account, events),
+                      ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers=_desktop_headers(account))
+    try:
+        with _accounts.urlopen(req, timeout=15, proxy=account.proxy) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+            return d.get("code") == 0
+    except Exception as exc:
+        _log(f"desktop report failed: {exc}")
+        return False
+
+
+def market_expert_search(account, keyword):
+    """专家页搜索：POST /portal/operation-platform/market/expert/list。
+
+    关键词字段名是 keyword —— search_keyword / query / search 都会被忽略、
+    返回全量 25318 条。同一关键词会命中多个同名专家（display_name_zh 与
+    profession_zh 都参与匹配，如「抖音策略师」命中 10 条含 3 个同名），
+    调用方必须按 expert_id 精确落位，不能取首条。
+    """
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return []
+    body = json.dumps({"page": 1, "page_size": 20, "keyword": keyword}).encode("utf-8")
+    headers = _desktop_headers(account)
+    headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(CHAT_BASE + EXPERT_MARKET_PATH, data=body,
+                                 method="POST", headers=headers)
+    with _accounts.urlopen(req, timeout=15, proxy=account.proxy) as resp:
+        d = json.loads(resp.read().decode("utf-8"))
+    return (d.get("data") or {}).get("experts") or []
+
+
+def _resolve_expert(account, expert):
+    """用专家市场条目校正任务里登记的静态参数（名称 / 职业名 / 版本 / 分类）。
+
+    市场搜索只用于校正：搜不到（网络失败、或不在前 20 条）就退回登记值，
+    召唤链本身不依赖搜索成功。命中时也按 expert_id 精确落位，不取首条。
+    """
+    resolved = dict(expert or {})
+    resolved.setdefault("type", "agent")
+    keyword = resolved.get("title") or resolved.get("name") or ""
+    try:
+        for item in market_expert_search(account, keyword):
+            if str(item.get("expert_id") or "") != resolved.get("id"):
+                continue
+            resolved["name"] = item.get("display_name_zh") or resolved.get("name") or ""
+            resolved["title"] = item.get("profession_zh") or resolved.get("title") or ""
+            resolved["version"] = item.get("version") or resolved.get("version")
+            resolved["type"] = item.get("expert_type") or resolved.get("type") or "agent"
+            resolved["categories"] = item.get("categories") or []
+            break
+    except Exception as exc:
+        _log(f"expert market search failed ({resolved.get('id')}): {exc}")
+    return resolved
+
+
+def _expert_category(expert):
+    categories = expert.get("categories") or []
+    first = categories[0] if categories else ""
+    return first if isinstance(first, str) and first else "expert-all"
+
+
+def _expert_summon_events(expert):
+    """「召唤平台专家」事件组（对齐真实抓包：web_element_click + summon + summoned）。"""
+    expert_id = expert.get("id") or ""
+    name = expert.get("name") or ""
+    title = expert.get("title") or name
+    category = _expert_category(expert)
+    version = expert.get("version") or "1.0.0"
+    return [
+        {"eventCode": "web_element_click", "source": expert_id, "type": category,
+         "version": version, "elementId": "expert_summon_click",
+         "elementName": "立即召唤",
+         "pageURL": "/C:/Program%20Files/WorkBuddy/resources/app.asar/renderer/index.html"},
+        {"eventCode": "expert_summon_click", "id": expert_id, "name": name,
+         "expertTitle": title, "type": "expert-all", "position": 0,
+         "expertType": expert.get("type") or "agent", "version": version,
+         "mode": "LOCAL"},
+        {"eventCode": "expert_summoned", "id": expert_id, "name": name,
+         "expertTitle": title, "type": "expert-all"},
+    ]
+
+
+def _expert_actual_use_event(expert, conversation_id, request_id):
+    """「专家真实使用」事件。
+
+    mode=LOCAL、type=""、cost=0 是对齐真实样本（专家页直连召唤）的三处细节；
+    requestId 必须是真实对话里服务端回的值，conversationId 用同一轮会话 id。
+    """
+    expert_id = expert.get("id") or ""
+    name = expert.get("name") or ""
+    title = expert.get("title") or name
+    return {
+        "eventCode": "expert_actual_use", "id": expert_id, "name": name,
+        "expertTitle": title, "mode": "LOCAL", "type": "",
+        "expertType": expert.get("type") or "agent",
+        "source": "builtin", "version": expert.get("version") or "1.0.0",
+        "cost": 0, "characterCount": 14,
+        "conversationId": conversation_id, "requestId": request_id,
+        "messageId": "msg-" + request_id[-8:],
+        "requestModelId": "fast-model", "requestModelName": "fast-model",
+    }
+
+
+def _desktop_chat_events(conversation_id, request_id, message_id,
+                         model_id="fast-model", model_name="fast-model"):
+    """一次「桌面端成功对话」的完整事件链（6 条）。
+
+    agent_task_created → chat_message_send → chat_request_send →
+    chat_message_response(isSuccessful) → chat_message_status →
+    chat_request_response。RichMeow_Chat 认的就是它；专家体验任务复用它并
+    把 agent_task_created 补成带专家的形态。
+    """
+    now = int(time.time() * 1000)
+    sid = {"codebuddy.session_id": conversation_id,
+           "codebuddy.conversation_request_id": request_id}
+    return [
+        {"eventCode": "agent_task_created", "source": "LOCAL", "name": "working",
+         "task_target": "local", "mode": "craft", "requestModelId": model_id,
+         "requestModelName": model_name, "has_repo": False, "repo_type": "none",
+         "workspace_type": "empty", "has_connector": False, "connector_types": [],
+         "has_mention": False, "mention_types": [], "has_template": False,
+         "action": "", "template_name": "", "has_expert": False, "expert_id": "",
+         "expert_name": "", "expert_industry_id": "", "has_skill": False,
+         "skill_names": [], "conversationId": conversation_id,
+         "messageId": message_id, "buddyId": "", "buddyName": ""},
+        {"eventCode": "chat_message_send", "messageId": message_id + "-assistant",
+         "historyCount": 0, "isContextTruncated": False, "currentStepCount": 1,
+         "traceId": request_id, "rootRequestId": request_id,
+         "parentConversationId": conversation_id, "agentName": "cli",
+         "agentType": "main"},
+        {"eventCode": "chat_request_send", "inputLength": 24, "isPlan": False,
+         "isAutoExecuteTerminal": False, "isAutoModify": False, "codebaseEnable": False,
+         "maxToken": 0, "maxSteps": 500, "temperature": 0, "maxRetries": 0,
+         "mentionContexts": [], "knowledgeId": [], "knowledgeName": [],
+         "codebaseId": "", "mentionContextCount": 0, "command": "", "recommendId": "",
+         "skillId": "", "skillCount": 0, "totalCount": 0, "traceId": request_id,
+         "rootRequestId": request_id, "parentConversationId": conversation_id,
+         "agentName": "cli", "agentType": "main", **sid},
+        {"eventCode": "chat_message_response", "messageId": message_id + "-assistant",
+         "responseModelId": model_id, "inputToken": 120, "outputToken": 80,
+         "totalToken": 200, "cachedTokens": 0, "cachedWriteTokens": 0,
+         "cachedMissTokens": 0, "isSuccessful": True, "messageErrorCode": "",
+         "finishReason": "stop", "firstTokenAt": now, "traceId": request_id,
+         "conversationId": conversation_id, "rootRequestId": request_id,
+         "parentConversationId": conversation_id, "agentName": "cli",
+         "agentType": "main", **sid},
+        {"eventCode": "chat_message_status",
+         "messageId": message_id + "-assistant", "messageErrorCode": "0",
+         "traceId": request_id, "rootRequestId": request_id,
+         "parentConversationId": conversation_id, "agentName": "cli",
+         "agentType": "main"},
+        {"eventCode": "chat_request_response", "mode": "craft", "toolCallCount": 0,
+         "inputToken": 120, "outputToken": 80, "totalToken": 200, "cachedTokens": 0,
+         "cachedWriteTokens": 0, "cachedMissTokens": 0, "isSuccessful": True,
+         "messageErrorCode": "", "finishReason": "stop",
+         "rootRequestId": request_id, "parentConversationId": conversation_id},
+    ]
+
+
+def _buddy_app_events(buddy_id=BUDDY_APP_ID, buddy_name=BUDDY_APP_NAME):
+    """「发现应用」进入五连事件（discover → show → enter → auth → bind skip）。
+
+    用「企鹅教师助手」作载体：同一组事件既满足 Buddy_App「进入任一应用」，
+    也满足 Buddy_App_QQ 的判据应用，两个任务共用一个动作。
+    """
+    base = {"mode": "LOCAL", "buddyId": buddy_id, "buddyName": buddy_name}
+
+    def event(code, extra=None):
+        item = {"eventCode": code}
+        item.update(base)
+        if extra:
+            item.update(extra)
+        return item
+
+    ident = {"elementId": buddy_id, "elementName": buddy_name}
+    return [
+        event("buddyapp_discover_click"),
+        event("buddyapp_show", dict(ident, position=2)),
+        event("buddyapp_enter_click", dict(ident, position=2, isFirstPage="1")),
+        event("buddyapp_auth_confirm_click", ident),
+        event("buddyapp_bindaccount_skip_click", ident),
+    ]
+
+
+def report_web_event(account, event_code, page_url, element_id, element_name):
+    """以 Web 端指纹向 www.workbuddy.cn/v2/report 上报单事件。
+
+    与桌面指纹（copilot 域）不同：web 域事件是浏览器形状（os/machineId/
+    userAgent），Library_read 等页面行为类任务认的是这个通道。
+    """
+    event = {
+        "eventCode": event_code, "timestamp": int(time.time() * 1000),
+        "reportDelay": 0, "pageURL": page_url, "elementId": element_id,
+        "elementName": element_name, "os": "Win32", "arch": "",
+        "osVersion": "10.0", "userAgent": WEB_UA,
+        "machineId": wb_fingerprint.derive_hex36(account.uid, "webmachine"),
+        "userId": account.uid,
+        "userNickname": getattr(account, "nickname", "") or "",
+        "enterpriseId": getattr(account, "enterprise_id", "") or "",
+    }
+    headers = {
+        "Authorization": "Bearer " + account.access_token,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "x-client-platform": "web",
+        "Origin": WEB_BASE,
+        "Referer": page_url,
+        "User-Agent": WEB_UA,
+        "X-User-Id": account.uid,
+    }
+    req = urllib.request.Request(WEB_BASE + "/v2/report",
+                                 data=json.dumps([event]).encode("utf-8"),
+                                 method="POST", headers=headers)
+    try:
+        with _accounts.urlopen(req, timeout=15, proxy=account.proxy) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+            return d.get("code") == 0
+    except Exception as exc:
+        _log(f"web report failed: {exc}")
+        return False
+
+
+def _expert_chat_once(account, expert_id):
+    """发一条真实桌面端对话（带 X-Expert-Id），从 SSE 里取服务端 requestId。
+
+    expert_actual_use 的 requestId 必须是服务端回的真实 id（cmb-<32hex> 或
+    32hex），自造 UUID 不计数。取到 id 即返回：后续帧只是回复正文，判据不看。
+    """
+    conversation_id = wb_identity.new_conversation_id()
+    body = {
+        "model": "fast-model",
+        "messages": [
+            {"role": "system",
+             "content": "You are a helpful assistant. 当前处于中文环境，使用简体中文回答。"},
+            {"role": "user", "content": "1+1等于几？直接回答。"},
+        ],
+        "agent": "cli",
+        "temperature": 1,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    headers = account.headers("chat", conversation_id=conversation_id)
+    headers["X-Expert-Id"] = expert_id
+    headers.setdefault("Content-Type", "application/json")
+    headers.setdefault("Accept", "text/event-stream")
+    req = urllib.request.Request(CHAT_BASE + "/v2/chat/completions",
+                                 data=json.dumps(body).encode("utf-8"),
+                                 method="POST", headers=headers)
+    with _accounts.urlopen(req, timeout=30, proxy=account.proxy) as resp:
+        buf = b""
+        search_from = 0
+        while len(buf) < (1 << 20):
+            chunk = resp.read(8192)
+            if not chunk:
+                break
+            buf += chunk
+            index = buf.find(b'"id":"', search_from)
+            while index >= 0:
+                rest = buf[index + 6:]
+                end = rest.find(b'"')
+                if end <= 0:
+                    break              # 半帧：等下一块
+                request_id = rest[:end].decode("utf-8", "replace")
+                if _SERVER_REQUEST_ID.match(request_id):
+                    return conversation_id, request_id
+                search_from = index + 1
+                index = buf.find(b'"id":"', search_from)
+    raise RuntimeError("SSE 中未找到服务端 requestId")
+
+
+def run_expert_experience(account, expert, logs, gap=1.0):
+    """完成「在专家页搜索并召唤「X」，完成一次对话」类任务。
+
+    判据与 Expert_lighthouse / WorkBuddy_Valorant 同源：召唤链 → 真实对话
+    （服务端 requestId）→ expert_actual_use(mode=LOCAL, type="", cost=0)。
+    市场搜索只用于校正专家参数，失败也照常走链。
+    """
+    resolved = _resolve_expert(account, expert)
+    logs.append(f"· 召唤专家「{resolved.get('title')}」({resolved.get('id')}) ...")
+    if not report_desktop_events(account, _expert_summon_events(resolved)):
+        logs.append("! 召唤事件上报失败")
+        return False
+    time.sleep(gap)
+    try:
+        conversation_id, request_id = _expert_chat_once(account, resolved.get("id"))
+    except Exception as exc:
+        logs.append(f"! 真实对话失败: {exc}")
+        return False
+    events = _desktop_chat_events(conversation_id, request_id,
+                                  "msg-" + request_id[-8:])
+    for event in events:
+        if event.get("eventCode") == "agent_task_created":
+            event["has_expert"] = True
+            event["expert_id"] = resolved.get("id")
+            event["expert_name"] = resolved.get("name") or ""
+            event["expert_industry_id"] = ""
+    events.append(_expert_actual_use_event(resolved, conversation_id, request_id))
+    if not report_desktop_events(account, events):
+        logs.append("! 使用事件上报失败")
+        return False
+    return True
+
+
+def _run_desktop_action(account, kind, spec, logs, gap=1.0):
+    """执行一个桌面端 / 网页行为链任务，返回上报是否成功。
+
+    只负责「把判据事件发出去」；进度回读与领奖由 _progress_one 统一处理
+    （上游计分是异步的，在这里领奖必然 400 task not completed）。
+    """
+    if kind == "richmeow":
+        conversation_id = wb_identity.new_conversation_id()
+        request_id = wb_identity.new_message_id()
+        message_id = wb_identity.new_message_id()
+        ok = report_desktop_events(
+            account, _desktop_chat_events(conversation_id, request_id, message_id))
+        logs.append("· 已上报桌面端成功对话事件链"
+                    if ok else "! 桌面端对话事件链上报失败")
+        return ok
+    if kind == "buddyapp":
+        ok = report_desktop_events(account, _buddy_app_events())
+        logs.append("· 已上报「发现应用」进入五连事件"
+                    if ok else "! Buddy 应用事件上报失败")
+        return ok
+    if kind == "library":
+        ok = report_web_event(account, "web_element_click", LIBRARY_DOC_URL,
+                              "library_doc_intro_click", "WorkBuddy资料库介绍")
+        logs.append("· 已上报资料库介绍阅读事件"
+                    if ok else "! 资料库事件上报失败")
+        return ok
+    if kind == "experience":
+        return run_expert_experience(account, spec.get("expert") or {}, logs, gap)
+    logs.append(f"! 未实现的行为链类型: {kind}")
+    return False
+
+
 def _travel_status(account):
     req = urllib.request.Request(CHAT_BASE + "/activity/growth/buddy/travel/status",
                                  headers=account.headers("chat"))
@@ -570,13 +1009,6 @@ def _progress_one(account, t, logs, gap, claim=True):
         time.sleep(gap)
         return 0
 
-    # 只认桌面端真实行为的任务: 伪造事件不会推进进度, 诚实跳过并给出深链。
-    if code in DESKTOP_ONLY_TASKS:
-        jump = t.get("jump_url") or "workbuddy://chat"
-        logs.append(f"⏭ 任务 [{spec['name']}] 需真实操作完成: {DESKTOP_ONLY_TASKS[code]}"
-                    f" (深链 {jump}), 跳过事件伪造")
-        return 0
-
     # 夜猫子任务只在 23:00-08:00 计数 (每日 01:00 调度器也会自动执行)
     if code in NIGHT_TASK_CODES and not in_night_window():
         logs.append(f"🌙 任务 [{spec['name']}] 仅 23:00-08:00 上报计数, 当前不在窗口, 跳过"
@@ -592,35 +1024,52 @@ def _progress_one(account, t, logs, gap, claim=True):
     # (eventCode, id) 去重, 进度永远不动。
     need = max(1, tgt - cur)
     kind = spec.get("kind")
+    chain = kind in CHAIN_TASK_KINDS
     logs.append(f"正在点亮任务 [{spec['name']}] (需上报 {need} 次)...")
     report_ok = True
-    id_pool = None
-    if kind in ("expert", "team"):
-        id_pool = TEAM_ID_POOL if kind == "team" else EXPERT_ID_POOL
-    fixed_expert = spec.get("expert")
-    for i in range(need):
-        expert = fixed_expert
-        if expert is None and id_pool:
-            pid, pnm = id_pool[(cur + i) % len(id_pool)]
-            expert = (pid, pnm)
-        ev = build_event(account, kind, idx=i, expert=expert)
-        if not report_events(account, [ev]):
-            report_ok = False
-        if i < need - 1:
-            time.sleep(gap)
+    if chain:
+        # 桌面端 / 网页行为链：一条完整事件链（含真实对话）才计 1 次，
+        # 重复发同一条链不会把进度推到 target 以上。
+        report_ok = _run_desktop_action(account, kind, spec, logs, gap)
+    else:
+        id_pool = None
+        if kind in ("expert", "team"):
+            id_pool = TEAM_ID_POOL if kind == "team" else EXPERT_ID_POOL
+        fixed_expert = spec.get("expert")
+        for i in range(need):
+            expert = fixed_expert
+            if expert is None and id_pool:
+                pid, pnm = id_pool[(cur + i) % len(id_pool)]
+                expert = (pid, pnm)
+            ev = build_event(account, kind, idx=i, expert=expert)
+            if not report_events(account, [ev]):
+                report_ok = False
+            if i < need - 1:
+                time.sleep(gap)
     if not report_ok:
         logs.append(f"! 任务 [{spec['name']}] 部分事件上报失败 (上游拒绝), 继续尝试领奖")
-    time.sleep(1.5)
+        if chain:
+            # 链没发出去就没有任何可等的计分，别白等 20 秒再领一次必失败的奖。
+            time.sleep(gap)
+            return 0
 
-    # 等上游把进度落账再领奖。进度通常 1-3 秒就可见, 因此先快查几次;
+    # 桌面链的计分比普通事件慢（实测 2~8 秒才落账），且每条链只发一次，
+    # 不能像普通事件那样等两轮就放弃——否则「已经点亮、只是还没落账」会被
+    # 记成失败，下一轮再发一次链（重复消耗真实对话配额）还拿不到奖励。
+    time.sleep(3.0 if chain else 1.5)
+
+    # 等上游把进度落账再领奖。普通事件通常 1-3 秒就可见, 因此先快查几次;
     # 只有确实在动才继续等, 免得每个卡住的任务都空等 20 秒 (整轮要几分钟)。
     prog = cur
-    for attempt in range(6):
+    for attempt in range(8 if chain else 6):
         fresh = next((x for x in fetch_growth_tasks(account) if x["task_code"] == code), None)
         if fresh:
             prog = fresh.get("current", 0)
             if prog >= tgt or fresh.get("status") in ("completed", "claimed"):
                 break
+            if chain:
+                time.sleep(2.5)
+                continue
             if prog > cur:
                 # 已经在涨了, 值得多等一会儿
                 time.sleep(2.5)
