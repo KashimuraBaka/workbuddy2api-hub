@@ -309,6 +309,91 @@ class IdentityVerbVariantsTests(unittest.TestCase):
         self.assertEqual(out[2]["content"], fp)
 
 
+class DshPathParagraphTests(unittest.TestCase):
+    """DSH 系统提示里的 @ 路径约定段。
+
+    上游 11-128 校验的是连续文本：下面两句紧挨着出现即触发（单独一句各 200，
+    连排必 400）。逐段实测只改第二句无效、改第一句才失配，所以规则锚定第一句
+    整句、只在 `are paths` 后插入一个 `that`，第二句原样保留。
+    """
+
+    A = "Tokens prefixed with @ are paths the user explicitly referenced."
+    A_FIXED = ("Tokens prefixed with @ are paths that the user explicitly "
+               "referenced.")
+    B = ("Relative paths resolve from the workspace root; absolute paths "
+         "identify files or directories on the host.")
+    TAIL = (" A trailing slash marks a directory: list it when its contents "
+            "matter.")
+    PARAGRAPH = A + " " + B + TAIL
+
+    def test_paragraph_in_system_rewritten(self):
+        out = P.sanitize_messages([{"role": "system", "content": self.PARAGRAPH}])
+        self.assertEqual(out[0]["content"], self.A_FIXED + " " + self.B + self.TAIL)
+
+    def test_developer_and_assistant_covered(self):
+        for role in ("developer", "assistant"):
+            out = P.sanitize_messages([{"role": role, "content": self.PARAGRAPH}])
+            self.assertEqual(out[0]["content"],
+                             self.A_FIXED + " " + self.B + self.TAIL, role)
+
+    def test_user_and_tool_untouched(self):
+        out = P.sanitize_messages([
+            {"role": "user", "content": self.PARAGRAPH},
+            {"role": "tool", "content": self.PARAGRAPH},
+        ])
+        self.assertEqual(out[0]["content"], self.PARAGRAPH)
+        self.assertEqual(out[1]["content"], self.PARAGRAPH)
+
+    def test_identity_false_untouched(self):
+        # 与 brand / identity 规则同一作用域：非 identity 文本（工具参数等）不动。
+        self.assertEqual(P.sanitize_text(self.PARAGRAPH, identity=False),
+                         self.PARAGRAPH)
+
+    def test_second_sentence_untouched(self):
+        out = P.sanitize_text(self.PARAGRAPH)
+        self.assertIn(self.B, out)
+        self.assertNotIn(self.A, out)
+
+    def test_first_sentence_alone_still_rewritten(self):
+        # 单句单独出现时上游本来就放行；这里仍保持同一条改写，规则不设上下文依赖。
+        self.assertEqual(P.sanitize_text(self.A), self.A_FIXED)
+
+    def test_line_wrapped_rewritten(self):
+        # 换行只是排版差异：句间断行不影响改写，句内断行时 `\s+` 吃到的空白原样保留。
+        self.assertEqual(P.sanitize_text(self.A + "\n" + self.B),
+                         self.A_FIXED + "\n" + self.B)
+        self.assertEqual(
+            P.sanitize_text("Tokens prefixed with @ are paths\nthe user explicitly "
+                            "referenced."),
+            "Tokens prefixed with @ are paths that\nthe user explicitly referenced.")
+
+    def test_case_insensitive_and_idempotent(self):
+        out = P.sanitize_text(self.PARAGRAPH.lower())
+        self.assertIn("tokens prefixed with @ are paths that the user explicitly "
+                      "referenced.", out)
+        self.assertEqual(P.sanitize_text(out), out)
+
+    def test_lookalikes_untouched(self):
+        for text in (
+            "Tokens prefixed with @ are files the user explicitly referenced.",
+            "Tokens prefixed with @ are paths.",
+            "Relative paths resolve from the workspace root; absolute paths "
+            "identify files or directories on the host.",
+            "The @paths are resolved by the host.",
+        ):
+            self.assertEqual(P.sanitize_text(text), text, text)
+            self.assertFalse(P.has_fingerprint(text), text)
+
+    def test_wire_body_carries_the_rewrite(self):
+        body = P.build_upstream_body({
+            "model": "deepseek-v4.1-flash",
+            "messages": [{"role": "system", "content": self.PARAGRAPH},
+                         {"role": "user", "content": "hi"}]})
+        system = body["messages"][0]["content"]
+        self.assertIn(self.A_FIXED, system)
+        self.assertIn(self.B, system)
+
+
 if __name__ == "__main__":
     unittest.main()
 

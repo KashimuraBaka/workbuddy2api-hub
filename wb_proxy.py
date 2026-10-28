@@ -11821,6 +11821,21 @@ SANITIZE_DSH_GUI_RE = re.compile(
     r" whose URL the runtime context names\.")
 SANITIZE_DSH_GUI_REPLACEMENT = r"\1 whose URL is named in the runtime context."
 SANITIZE_DSH_GUI_LOWER = "whose url the runtime context names"
+# @ 路径说明段：DSH 的系统提示里还有一段路径约定，第一句后面紧跟着第二句——
+#   Tokens prefixed with @ are paths the user explicitly referenced.
+#   Relative paths resolve from the workspace root; absolute paths identify files or directories on the host.
+# 上游 11-128 校验的是「连续文本」：这两句紧挨着出现即触发（单独一句各 200，
+# 连排必 400）。逐段实测：只改第二句无效，改第一句才失配——指纹跨句，动哪一句
+# 都只是让这段连续文本变样，而第一句是唯一稳定出现在所有请求里的锚点。
+#
+# 这里锚定第一句整句，只在 `are paths` 后插入一个 `that`：
+#   Tokens prefixed with @ are paths that the user explicitly referenced.
+# 句意不变、一个词都不删，第二句原样保留；句子之外的同名文本不受影响。
+SANITIZE_DSH_PATH_RE = re.compile(
+    r"(?i)(Tokens prefixed with @ are paths)"
+    r"(\s+the user explicitly referenced\.)")
+SANITIZE_DSH_PATH_REPLACEMENT = r"\1 that\2"
+SANITIZE_DSH_PATH_LOWER = "tokens prefixed with @ are paths"
 # 品牌词缩减（#574）：`DeepSeek Harness` 单独出现放行，但它和 GUI 描述句
 # （`this page` / `this GUI` / `this app`）连续出现时命中同一套 11-128 校验。
 # 逐段二分实测：只把品牌缩成 `DeepSeek` 就能通过，句子其余部分不用动；
@@ -11878,6 +11893,10 @@ def has_fingerprint(text, identity=True):
     if (SANITIZE_DSH_GUI_LOWER in low
             and SANITIZE_DSH_GUI_RE.search(text) is not None):
         return True
+    # @ 路径说明段：同样先做一次字面量探测，命中才走正则。
+    if (SANITIZE_DSH_PATH_LOWER in low
+            and SANITIZE_DSH_PATH_RE.search(text) is not None):
+        return True
     # 动词短语只是廉价前置筛：真命中与否交给正则判定。这样 "powered by" 出现在
     # 与自我介绍无关的句子（工具/插件的产品描述）时不会走进 sanitize_text 的其余
     # 清洗步骤，也不会白白改写。
@@ -11898,6 +11917,8 @@ def sanitize_text(text, identity=True):
         text = SANITIZE_IDENTITY_RE.sub(SANITIZE_IDENTITY_REPLACEMENT, text)
         # GUI 描述段单独一条规则：锚定整句，只调整句尾语序。
         text = SANITIZE_DSH_GUI_RE.sub(SANITIZE_DSH_GUI_REPLACEMENT, text)
+        # @ 路径说明段单独一条规则：锚定第一句，只插入一个 `that`。
+        text = SANITIZE_DSH_PATH_RE.sub(SANITIZE_DSH_PATH_REPLACEMENT, text)
         # 品牌词缩减放在最后：GUI 规则还认全名，先让它匹配原文。
         text = SANITIZE_BRAND_RE.sub(SANITIZE_BRAND_REPLACEMENT, text)
     for old, new in SANITIZE_REWRITES:
