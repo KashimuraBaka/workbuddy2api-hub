@@ -27,6 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import wb_fingerprint as F  # noqa: E402
+import wb_identity as I  # noqa: E402
 import wb_tasks as T  # noqa: E402
 
 SERVER_REQUEST_ID = "cmb-0123456789abcdef0123456789abcdef"
@@ -169,6 +170,11 @@ class GrowthExperienceTests(unittest.TestCase):
         self.assertEqual(intl["ideVersion"], "5.8.4")
         self.assertEqual(intl["commit"], "73952edb48da46bd0b244661efe22f4f247c4977")
         self.assertNotIn("qimei36", intl)            # 国际版一条都不带
+        # 上报三元组与出站身份必须同源：同一台桌面端不可能 headers 报 5.8.3、
+        # report 报 5.8.4（这是最容易被设备侧写识破的一处）。要把版本升级，
+        # wb_identity 与 DESKTOP_TRIPLES 必须一起改——这条断言就是那道闸。
+        self.assertEqual(F.DESKTOP_TRIPLES["cn"][0], I.DESKTOP_VERSION_CN)
+        self.assertEqual(F.DESKTOP_TRIPLES["intl"][0], I.DESKTOP_VERSION_INTL)
 
     # ------------------------------------------------------------------
     # 专家体验链

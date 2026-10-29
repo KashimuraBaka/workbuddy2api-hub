@@ -659,6 +659,14 @@ import wb_proxy
 home10 = tempfile.mkdtemp(prefix="wb-agents-home10-")
 acct10 = tempfile.mkdtemp(prefix="wb-agents-acct10-")
 
+# 一键配置在 payload 不带 `models` 时会去 wb_proxy.ACCOUNTS_DIR 读**已保存的**
+# 勾选清单（96948ea）。原来这里没有隔离：CI 上没有 accounts/settings.json 所以绿，
+# 而开发者本机一旦在面板里保存过勾选，这套件就会假红（写出来的是勾选清单而不是
+# 目录兜底）。这里钉到空目录——本段要测的分支就是「从未保存过 → 整份目录」；
+# 「已保存 → 只写勾选」由 _test_agent_ui.js 覆盖。
+orig_accounts_dir10 = wb_proxy.ACCOUNTS_DIR
+wb_proxy.ACCOUNTS_DIR = tempfile.mkdtemp(prefix="wb-agents-settings10-")
+
 class MockHandler:
     def __init__(self, accounts_dir, home_dir):
         self.accounts_dir = accounts_dir
@@ -725,6 +733,7 @@ try:
 finally:
     A.integrate = orig_integrate
     A.restore = orig_restore
+    wb_proxy.ACCOUNTS_DIR = orig_accounts_dir10
 
 print()
 print("[27] rollback restores a pre-existing file from its backup (NameError regression)")
