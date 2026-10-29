@@ -57,6 +57,7 @@ wb_catalog.py
 wb_egress.py
 wb_fingerprint.py
 wb_identity.py
+wb_invite.py
 wb_ipintel.py
 wb_logstore.py
 wb_modelsdev.py

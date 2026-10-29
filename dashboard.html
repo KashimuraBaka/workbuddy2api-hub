@@ -284,10 +284,20 @@ table.activity-table td[data-label="结果"]{white-space:nowrap}
 table.account-cards td[data-label="账号"] .cool-list{display:flex;flex-direction:column;align-items:stretch;gap:2px;max-width:100%;overflow:hidden}
 table.account-cards td[data-label="账号"] .cool-pill{display:block;width:100%;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (min-width:641px){
-  table.account-cards{table-layout:fixed;min-width:1262px}
+  /* 1336 = 各列宽之和（版本 76 + 账号 180 + 状态 84 + 今日活动 118 + 出口 150 +
+     权重 64 + 积分 120 + 请求 70 + 总 token 88 + 缓存 80 + 操作 306）。min-width
+     必须跟着操作列一起涨，否则固定布局会把多出来的 74px 从别的列里扣，账号名
+     会先被压成省略号。 */
+  table.account-cards{table-layout:fixed;min-width:1336px}
   table.account-cards th:nth-child(2),table.account-cards td:nth-child(2){width:180px}
-  table.account-cards td.acct-actions{white-space:normal;min-width:232px;width:232px;position:sticky;right:0;z-index:2;background:var(--panel);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
-  table.account-cards th:last-child{position:sticky;right:0;z-index:3;background:var(--panel2);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
+  /* 232px 是「停用/测试/刷新凭证/同步昵称 + 出站身份 + 导出/删除」时代的值；
+     那张表两行都还要往外顶 20~40px。加了「邀请」之后第二行要 293px，所以列宽
+     跟到 306px，别让导出/删除再被挤到可视区外——手机端在 640px 那条里已经改成
+     position:static + 折行，不受这里影响。 */
+  table.account-cards td.acct-actions{white-space:normal;min-width:306px;width:306px;position:sticky;right:0;z-index:2;background:var(--panel);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
+  /* table-layout:fixed 下真正决定列宽的是首行的 th，td 上的 width 不参与计算——
+     所以「邀请」占的那 74px 必须同时写在表头上，否则 td 仍然只有 232px 宽。 */
+  table.account-cards th:last-child{width:306px;position:sticky;right:0;z-index:3;background:var(--panel2);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
   table.account-cards tbody tr:hover td.acct-actions{background:var(--panel2)}
   /* 操作区沿用原来的两行布局，不在窄列中再次折成三四行。 */
   table.account-cards .acct-actions-col{min-width:max-content;max-width:none}
@@ -399,6 +409,22 @@ table.account-cards tr.cool-row .cool-pill{display:inline-block;width:auto;max-w
 
 .acct-actions-col{display:flex;flex-direction:column;gap:5px;align-items:center;justify-content:center}
 .acct-actions-row{display:flex;gap:4px;justify-content:center}
+/* 邀请面板：上半是「我的邀请码」（主信息，等宽放大），下半是「受邀」的输入 + 主
+   按钮；中间一条分隔线，免得把「看自己的码」和「绑别人的码」看成一件事。 */
+.invite-sec{padding:12px 0;border-bottom:1px solid var(--line)}
+.invite-sec:last-child{padding-bottom:0;border-bottom:none}
+.invite-sec-label{font-size:12px;color:var(--dim);margin-bottom:8px}
+.invite-code-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.invite-code{font-family:var(--mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:18px;
+  font-weight:700;letter-spacing:.6px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:8px;padding:7px 12px;word-break:break-all}
+.invite-bind-row{display:flex;gap:8px;flex-wrap:wrap}
+.invite-bind-row input{flex:1 1 200px;min-width:0;background:var(--panel2);border:1px solid var(--line);
+  border-radius:8px;padding:7px 10px;color:var(--fg);font:inherit;font-size:13px}
+.invite-bind-row input:focus{outline:none;border-color:var(--accent)}
+.invite-result{margin-top:8px;font-size:12px;line-height:1.5;color:var(--dim);min-height:16px}
+.invite-result.ok{color:var(--accent2)}
+.invite-result.bad{color:var(--bad)}
 /* 账号列（accountRow）：账号名 + 备注 chip 一行、次要信息一行、报错一行。
    次要信息与报错的完整值都在 data-tip 悬浮气泡里。 */
 .acct-name-row{display:flex;align-items:center;gap:6px;min-width:0}
@@ -1840,6 +1866,27 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '域名': 'Domain',
     '备注名称': 'Label',
     '复制': 'Copy',
+    // 邀请面板（仅国内版）：静态文案必须与 dashboard.html 里的文本逐字一致，
+    // 否则英文界面会静默回落成中文。动态结果（进度汇总 / 上游业务码说明）本来
+    // 就是服务端或运行时拼的，与其它 toast 一样保持中文。
+    '邀请': 'Invite',
+    '我的邀请码': 'My invite code',
+    '读取中…': 'Loading…',
+    '读取失败': 'Failed to load',
+    '（空）': '(empty)',
+    '长期有效': 'Never expires',
+    '受邀（输入邀请码）': 'Accept an invite (enter a code)',
+    '输入邀请码': 'Enter invite code',
+    '绑定': 'Bind',
+    '提交中…': 'Submitting…',
+    '正在提交…': 'Submitting…',
+    '绑定失败': 'Bind failed',
+    '邀请绑定成功': 'Invite bound',
+    '邀请码已复制': 'Invite code copied',
+    '还没有可复制的邀请码': 'No invite code to copy yet',
+    '请先输入邀请码': 'Enter an invite code first',
+    '查看本账号的邀请码，或用邀请码手动受邀绑定': 'Show this account\'s invite code, or bind an invite code manually',
+    '仅活动期内新注册、且从未绑定过的账号能绑定成功；一个账号只能绑定一次，不能填自己的邀请码。': 'Only accounts registered during the campaign that have never been bound can bind; each account binds once, and you cannot use your own code.',
     '复制失败:': 'Copy failed:',
     '复制登录链接': 'Copy sign-in link',
     '复制当前视图显示的日志': 'Copy the log lines shown in the current view',
@@ -2823,6 +2870,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '猫猫正在旅行途中，请稍后再来查看！': 'The cat is still travelling; check again later!'
   };
   var HANT_PHRASES = {
+    // 「注册」在台湾写作「註冊」：字表只能逐字替换（册→冊），而 注→註 只在
+    // 「註冊」这一个词里成立（注意 仍是 注意），所以按词进短语表。
+    "注册": "註冊",
     "API 等价花费": "API 等價花費",
     "API 等价": "API 等價",
     " · 周期已过": " · 週期已過",
@@ -5886,6 +5936,40 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   </div>
 </div>
 
+<div class="modal-mask" id="inviteModal" onclick="if(event.target===this) closeInvitePanel()">
+  <div class="modal" role="dialog" aria-modal="true" style="width:min(560px,100%)">
+    <div class="modal-hd">
+      <h2 id="inviteModalTitle">邀请</h2>
+      <button class="modal-x" onclick="closeInvitePanel()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <div class="invite-sec">
+        <div class="invite-sec-label">我的邀请码</div>
+        <div class="invite-code-row">
+          <span class="invite-code" id="inviteCodeValue">读取中…</span>
+          <button class="sec mini" onclick="copyInviteCode()">复制</button>
+        </div>
+        <div class="invite-result" id="inviteCodeMeta"></div>
+      </div>
+      <div class="invite-sec">
+        <div class="invite-sec-label">受邀（输入邀请码）</div>
+        <div class="invite-bind-row">
+          <input id="inviteBindInput" placeholder="输入邀请码" maxlength="32"
+                 autocomplete="off" spellcheck="false"
+                 onkeydown="if(event.key==='Enter') submitInviteBind()">
+          <button id="inviteBindBtn" onclick="submitInviteBind()">绑定</button>
+        </div>
+        <div class="invite-result" id="inviteBindResult"></div>
+        <p class="hint" style="margin:8px 0 0">仅活动期内新注册、且从未绑定过的账号能绑定成功；一个账号只能绑定一次，不能填自己的邀请码。</p>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button class="sec" onclick="reloadInvite()">刷新</button>
+      <button class="sec" onclick="closeInvitePanel()">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-mask" id="desktopScanModal">
   <div class="modal" role="dialog" aria-modal="true" style="width:min(720px,100%)">
     <div class="modal-hd">
@@ -8676,6 +8760,11 @@ function accountRow(a){
     +       '<button class="id-btn' + (a.product === 'vscode' ? ' active' : '') + '" onclick="setAccountProduct(&quot;' + uidAttr + '&quot;, &quot;vscode&quot;, this)">VSC</button>'
     +       '<button class="id-btn' + (a.product === 'cli' ? ' active' : '') + '" onclick="setAccountProduct(&quot;' + uidAttr + '&quot;, &quot;cli&quot;, this)">CLI</button>'
     +     '</div>'
+    // 邀请面板只有国内版有（活动挂在 workbuddy.cn）；静态 API Key 账号没有个人
+    // 成长体系，这套邀请接口对它们只会返回 401，所以不给它们画入口。
+    +     (a.realm === 'cn' && !a.apiKey
+          ? '<button class="sec mini" onclick="openInvitePanel(&quot;' + uidAttr + '&quot;)" title="查看本账号的邀请码，或用邀请码手动受邀绑定">邀请</button>'
+          : '')
     +     '<button class="sec mini" onclick="exportOne(&quot;' + uidAttr + '&quot;)">导出</button>'
     +     '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;, this)">删除</button>'
     +   '</div>'
@@ -9055,7 +9144,7 @@ function renderAccounts(){
     + '<th style="text-align:right;width:70px">请求</th>'
     + '<th style="text-align:right;width:88px">总 token</th>'
     + '<th style="text-align:right;width:80px">缓存</th>'
-    + '<th style="text-align:center;width:232px">操作</th>'
+    + '<th style="text-align:center;width:306px">操作</th>'
     + '</tr></thead><tbody>' + list.map(accountRow).join('') + '</tbody></table></div>';
   // 表下不再堆两行说明图例（出站身份解释留在每行身份按钮组的悬停提示里，
   // 轮询/粘性说明挂到「账号列表」标题上），表格底部保持干净。
@@ -9328,6 +9417,110 @@ async function syncProfile(uid, btn){
     toast('同步失败: ' + e.message, 'bad');
   }finally{
     if(btn){ btn.disabled = false; btn.textContent = '同步昵称'; }
+  }
+}
+
+/* 邀请面板（仅国内版）：活动页没有「绑定」按钮——带着 ?inviteCode= 打开、登录态就绪
+   后页面自己会 POST 一次 /bind。面板把这件事拆成两个手动动作：看本账号的邀请码、
+   按需把别人给的邀请码绑进来。写操作只在点「绑定」时发生，一次一个账号。
+   面板里的码是邀请码本身而不是分享链接：链接由对方去拼，这里贴链接只会让人误以为
+   要整条粘贴。 */
+let INVITE_UID = '';
+function setInviteText(id, text, kind){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.textContent = text == null ? '' : String(text);
+  el.className = 'invite-result' + (kind ? ' ' + kind : '');
+}
+function setInviteCode(text){
+  const el = document.getElementById('inviteCodeValue');
+  if(el) el.textContent = text == null ? '' : String(text);
+}
+async function openInvitePanel(uid){
+  const m = document.getElementById('inviteModal');
+  if(!m) return;
+  INVITE_UID = String(uid || '');
+  const acct = (window.ACCOUNTS || []).find(a => a.uid === INVITE_UID);
+  const short = INVITE_UID.slice(0, 8);
+  const title = document.getElementById('inviteModalTitle');
+  if(title) title.textContent = '邀请 · ' + (acct ? (acct.nickname || short) : short);
+  const input = document.getElementById('inviteBindInput');
+  if(input) input.value = '';
+  setInviteText('inviteBindResult', '', '');
+  m.classList.add('show');
+  await reloadInvite();
+}
+function closeInvitePanel(){
+  const m = document.getElementById('inviteModal');
+  if(m) m.classList.remove('show');
+  INVITE_UID = '';
+}
+async function reloadInvite(){
+  const uid = INVITE_UID;
+  if(!uid) return;
+  setInviteCode('读取中…');
+  setInviteText('inviteCodeMeta', '', '');
+  try{
+    const r = await postJSON('/accounts/invite', {uid: uid});
+    // 面板已经切到别的账号时，这一份结果属于上一个账号，丢掉。
+    if(INVITE_UID !== uid) return;
+    setInviteCode(r.code || '（空）');
+    const p = r.progress || {};
+    const parts = [];
+    if(r.expiresAt === 'never') parts.push('长期有效');
+    else if(r.expiresAt) parts.push('有效期至 ' + r.expiresAt);
+    parts.push('已邀请 ' + (p.inviteCount || 0) + ' 人');
+    parts.push('有效 ' + (p.validInviteCount || 0) + ' 人');
+    parts.push('积分 ' + (p.totalCredits || 0) + (p.capValue ? ' / 上限 ' + p.capValue : ''));
+    setInviteText('inviteCodeMeta', parts.join(' · '), '');
+  }catch(e){
+    if(INVITE_UID !== uid) return;
+    setInviteCode('读取失败');
+    setInviteText('inviteCodeMeta', e.message || '读取失败', 'bad');
+  }
+}
+async function copyInviteCode(){
+  const el = document.getElementById('inviteCodeValue');
+  const code = el ? String(el.textContent || '').trim() : '';
+  if(!code || code === '读取中…' || code === '读取失败'){
+    toast('还没有可复制的邀请码', 'warn');
+    return;
+  }
+  try{
+    await writeClipboard(code);
+    toast('邀请码已复制', 'ok');
+  }catch(e){
+    toast('复制失败: ' + e.message, 'bad');
+  }
+}
+async function submitInviteBind(){
+  const uid = INVITE_UID;
+  const input = document.getElementById('inviteBindInput');
+  const btn = document.getElementById('inviteBindBtn');
+  const code = input ? String(input.value || '').trim() : '';
+  if(!uid) return;
+  if(!code){
+    toast('请先输入邀请码', 'warn');
+    if(input) input.focus();
+    return;
+  }
+  if(btn){ btn.disabled = true; btn.textContent = '提交中…'; }
+  setInviteText('inviteBindResult', '正在提交…', '');
+  try{
+    const r = await postJSON('/accounts/invite/bind', {uid: uid, inviteCode: code});
+    if(r.ok){
+      setInviteText('inviteBindResult', r.message || '邀请绑定成功', 'ok');
+      toast('邀请绑定成功', 'ok');
+      if(input) input.value = '';
+      await reloadInvite();
+    }else{
+      // 业务拒绝（已绑过 / 非新用户 / 自己的码）照上游原因显示，附上业务码方便对照。
+      setInviteText('inviteBindResult', (r.message || '绑定失败') + (r.code ? '（' + r.code + '）' : ''), 'bad');
+    }
+  }catch(e){
+    setInviteText('inviteBindResult', '绑定失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '绑定'; }
   }
 }
 async function testAccount(uid, btn){

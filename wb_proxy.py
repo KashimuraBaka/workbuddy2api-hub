@@ -80,6 +80,7 @@ import wb_tiers
 import wb_upstream_pool
 import wb_webtools
 import wb_identity
+import wb_invite
 import wb_prompt
 import wb_modelsdev
 import wb_probes
@@ -20933,6 +20934,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_accounts_refresh(payload)
         if path == "/accounts/sync-profile":
             return self._route_accounts_sync_profile(payload)
+        if path == "/accounts/invite":
+            return self._route_accounts_invite(payload)
+        if path == "/accounts/invite/bind":
+            return self._route_accounts_invite_bind(payload)
         if path == "/accounts/test":
             return self._route_accounts_test(payload)
         if path == "/accounts/set":
@@ -21553,6 +21558,74 @@ class Handler(BaseHTTPRequestHandler):
                 % account.uid[:8], level="INFO")
         return self._json_panel(200, {"updated": updated, "failed": failed,
                                 "accounts": account_views()})
+
+    def _invite_target(self, payload):
+        """邀请面板的目标账号；国际版账号直接拒（那套活动只有国内版有）。
+
+        失败时已经把响应写回去了，这里返回 None——_error() 自己负责回包，
+        调用方只需要直接 return。
+        """
+        uid = str(payload.get("uid") or "").strip()
+        account = POOL.get(uid) if uid else None
+        if not account:
+            self._error(404, "no such account", "invalid_request_error")
+            return None
+        if str(getattr(account, "realm", "")).lower() != "cn":
+            self._error(400, "invite activity is only available for CN accounts",
+                        "invalid_request_error")
+            return None
+        return account
+
+    def _route_accounts_invite(self, payload):
+        """账号自己的邀请码与邀请进度（只读）。
+
+        活动页要登录后才看得到这张码；面板把同一份数据取回来显示。绑定在另一条
+        路由上，只有操作者真的提交邀请码时才会发生。
+        """
+        account = self._invite_target(payload)
+        if account is None:
+            return
+        try:
+            code = wb_invite.fetch_code(account)
+            progress = wb_invite.fetch_progress(account)
+        except wb_invite.InviteError as exc:
+            log("invite read failed for %s: %s" % (account.uid[:8], exc),
+                level="WARN", tag="accounts")
+            return self._error(
+                exc.status, str(exc),
+                "invalid_request_error" if exc.status == 400 else "server_error")
+        return self._json_panel(200, {
+            "uid": account.uid,
+            "code": code["inviteCode"],
+            "expiresAt": code["expiresAt"],
+            "progress": progress,
+        })
+
+    def _route_accounts_invite_bind(self, payload):
+        """把邀请码绑到指定账号（手动受邀）。
+
+        上游的业务拒绝（已绑过 / 非活动期新用户 / 自己的码）走 200 + ok=false，
+        面板照原因显示就行；只有凭据与网络故障才算 5xx。日志只记 uid 前缀、
+        邀请码长度与业务码——邀请码本身不进日志。
+        """
+        account = self._invite_target(payload)
+        if account is None:
+            return
+        raw = payload.get("inviteCode")
+        if raw is None:
+            raw = payload.get("invite_code")
+        try:
+            result = wb_invite.bind(account, raw)
+        except wb_invite.InviteError as exc:
+            log("invite bind rejected for %s: %s" % (account.uid[:8], exc),
+                level="WARN", tag="accounts")
+            return self._error(
+                exc.status, str(exc),
+                "invalid_request_error" if exc.status == 400 else "server_error")
+        log("invite bind: uid=%s code_len=%d => %s"
+            % (account.uid[:8], len(str(raw or "").strip()), result["code"]),
+            level="INFO" if result["ok"] else "WARN", tag="accounts")
+        return self._json_panel(200, result)
 
     def _route_accounts_test(self, payload):
         uid = payload.get("uid")
